@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>FitCheck Space Optimizer</title>
+  <!-- Google Fonts for Modern Typography -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  
+  <!-- A-Frame Library -->
+  <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
+
+  <!-- External Clean Styling -->
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Welcome / WebXR Launch Overlay -->
+  <div id="start-overlay">
+    <div class="welcome-card">
+      <div class="welcome-logo">
+        <svg viewBox="0 0 24 24">
+          <path d="M12 2.69l5.66 3.27-5.66 3.27-5.66-3.27L12 2.69M2.81 7.22l8.19 4.73v9.36l-8.19-4.73V7.22M21.19 7.22v9.36l-8.19 4.73v-9.36l8.19-4.73Z"/>
+        </svg>
+      </div>
+      <h1 class="welcome-title">FitCheck Optimizer</h1>
+      <p class="welcome-desc">
+        Overlay 1:1 true-to-scale bounding volumes of large items inside your car, elevator, or doorways to verify clearances in WebAR instantly.
+      </p>
+      <button class="primary-btn interactive" id="start-ar-btn">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right:2px;">
+          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+          <circle cx="12" cy="13" r="4"></circle>
+        </svg>
+        Enter AR Experience
+      </button>
+    </div>
+  </div>
+
+  <!-- HUD overlay (visible once in AR) -->
+  <div id="ui-container">
+    <header class="interactive">
+      <div class="brand">
+        <div class="brand-logo"></div>
+        <span class="brand-title">FitCheck</span>
+      </div>
+      <div class="status-badge" id="ar-status-badge">
+        <span class="status-dot scanning" id="ar-status-dot"></span>
+        <span id="ar-status-text">Scanning floor</span>
+      </div>
+    </header>
+
+    <!-- Mid-screen instructions toast -->
+    <div id="status-toast" class="interactive">
+      <span id="toast-text">Move device slowly to detect surfaces</span>
+    </div>
+
+    <!-- Bottom Sheet UI Panel -->
+    <div id="bottom-sheet" class="interactive">
+      <!-- Tabs switching -->
+      <div class="tabs-header">
+        <button class="tab-btn active" id="tab-library" onclick="switchTab('library')">Product Catalog</button>
+        <button class="tab-btn" id="tab-custom" onclick="switchTab('custom')">Custom Fit</button>
+      </div>
+
+      <!-- Catalog List Tab -->
+      <div class="tab-content active" id="content-library">
+        <div class="product-grid">
+          <div class="product-card selected" id="prod-0" onclick="selectItem(0)">
+            <div class="product-icon">📺</div>
+            <div class="product-name">75" TV Box</div>
+          </div>
+          <div class="product-card" id="prod-1" onclick="selectItem(1)">
+            <div class="product-icon">🛋️</div>
+            <div class="product-name">3-Seater Sofa</div>
+          </div>
+          <div class="product-card" id="prod-2" onclick="selectItem(2)">
+            <div class="product-icon">🧊</div>
+            <div class="product-name">French Fridge</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Custom Input Form Tab -->
+      <div class="tab-content" id="content-custom">
+        <div class="custom-form">
+          <div class="input-group">
+            <span class="input-label">Width (m)</span>
+            <input type="number" id="input-w" class="num-input" value="1.70" step="0.05" min="0.1">
+          </div>
+          <div class="input-group">
+            <span class="input-label">Height (m)</span>
+            <input type="number" id="input-h" class="num-input" value="1.00" step="0.05" min="0.1">
+          </div>
+          <div class="input-group">
+            <span class="input-label">Depth (m)</span>
+            <input type="number" id="input-d" class="num-input" value="0.20" step="0.05" min="0.1">
+          </div>
+          <button class="apply-custom-btn" onclick="applyCustomDims()">
+            ✓ Generate & Apply Box Size
+          </button>
+        </div>
+      </div>
+
+      <!-- Active Box HUD details -->
+      <div class="hud-details">
+        <div class="selected-metadata">
+          <div class="selected-title" id="hud-item-name">75-inch TV Box</div>
+          <div class="selected-dims" id="hud-item-dims">67" x 39" x 8"  |  1.70m x 1.00m x 0.20m</div>
+        </div>
+        <button class="reset-btn" onclick="resetARSession()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"></polyline>
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+          </svg>
+          Clear
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- A-Frame 3D Scene -->
+  <a-scene 
+    webxr="optionalFeatures: hit-test, local-floor; referenceSpaceType: local-floor" 
+    vr-mode-ui="enabled: false"
+    renderer="colorManagement: true; antialias: true;">
+    
+    <a-assets>
+      <a-mixin id="reticle-ring" geometry="primitive: ring; radiusInner: 0.12; radiusOuter: 0.15;" material="color: #06b6d4; shader: flat; transparent: true; opacity: 0.8;"></a-mixin>
+      <a-mixin id="reticle-dot" geometry="primitive: circle; radius: 0.02;" material="color: #06b6d4; shader: flat;"></a-mixin>
+    </a-assets>
+
+    <!-- Camera rig -->
+    <a-entity camera position="0 1.6 0" look-controls></a-entity>
+
+    <!-- Light Sources -->
+    <a-entity light="type: ambient; color: #BBB; intensity: 0.6"></a-entity>
+    <a-entity light="type: directional; color: #FFF; intensity: 0.8; castShadow: true" position="-0.5 2 1.5"></a-entity>
+
+    <!-- The AR Placement Reticle -->
+    <a-entity id="placement-reticle" visible="false">
+      <a-entity mixin="reticle-ring" rotation="-90 0 0"></a-entity>
+      <a-entity mixin="reticle-dot" rotation="-90 0 0"></a-entity>
+    </a-entity>
+
+    <!-- The 1:1 Scaled Bounding Box Container -->
+    <a-entity id="bounding-box" visible="false">
+      <a-box 
+        id="box-mesh" 
+        position="0 0.5 0" 
+        width="1" height="1" depth="1"
+        material="shader: standard; transparent: true; opacity: 0.45; color: #10b981; metalness: 0.1; roughness: 0.3; side: double;">
+        
+        <a-box 
+          id="box-wireframe"
+          position="0 0 0"
+          width="1.002" height="1.002" depth="1.002"
+          material="shader: flat; wireframe: true; wireframeLineWidth: 1.5; color: #ffffff; transparent: true; opacity: 0.6;">
+        </a-box>
+      </a-box>
+    </a-entity>
+
+  </a-scene>
+
+  <!-- External Modular JavaScript Logic -->
+  <script src="app.js"></script>
+</body>
+</html>
