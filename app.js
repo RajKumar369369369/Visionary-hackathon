@@ -38,6 +38,43 @@ window.addEventListener('pointerdown', (e) => {
   }
 });
 
+// Dynamic canvas grid generation and click listener for the simulator floor
+window.addEventListener('DOMContentLoaded', () => {
+  const canvas = document.getElementById('grid-texture');
+  if (canvas) {
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(0, 0, 128, 128);
+    // Draw neon cyan borders to form grid lines
+    ctx.strokeStyle = 'rgba(6, 182, 212, 0.35)';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(0, 0, 128, 128);
+  }
+
+  // Add click listener on the simulator floor for desktop testing
+  const simFloor = document.getElementById('sim-floor');
+  if (simFloor) {
+    simFloor.addEventListener('click', (e) => {
+      // Cooldown check to prevent overlay click placements
+      if (Date.now() - lastUIInteractionTime < 350) return;
+
+      const intersectPoint = e.detail.intersection.point;
+      const boxEl = document.getElementById('bounding-box');
+
+      if (boxEl) {
+        boxEl.setAttribute('position', intersectPoint);
+        boxEl.setAttribute('visible', 'true');
+        isPlaced = true;
+        
+        updateStatusBadge('ready', 'Placed');
+        updateBoxDimensions();
+        checkPointOverlap(); // Check collision immediately on placement
+        showToast("Box placed in simulator!");
+      }
+    });
+  }
+});
+
 // UI Tab Switches
 function switchTab(tab) {
   document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
@@ -154,6 +191,14 @@ AFRAME.registerComponent('ar-hit-test-listener', {
     this.sceneEl.addEventListener('enter-vr', () => {
       if (!this.sceneEl.is('ar-mode')) return;
 
+      // Hide desktop simulator when entering true mobile AR mode
+      const desktopSim = document.getElementById('desktop-simulation');
+      if (desktopSim) desktopSim.setAttribute('visible', 'false');
+
+      // Adjust camera position for mobile AR (reset to origin)
+      const camera = document.querySelector('[camera]');
+      if (camera) camera.setAttribute('position', '0 1.6 0');
+
       showToast("Move phone slowly side-to-side to detect floor");
       updateStatusBadge('scanning', 'Scanning Floor');
 
@@ -198,6 +243,14 @@ AFRAME.registerComponent('ar-hit-test-listener', {
       this.viewerSpace = null;
       resetARSession();
       document.getElementById('start-overlay').style.display = 'flex';
+
+      // Restore desktop simulator when exiting AR mode
+      const desktopSim = document.getElementById('desktop-simulation');
+      if (desktopSim) desktopSim.setAttribute('visible', 'true');
+
+      // Set camera back for simulator view
+      const camera = document.querySelector('[camera]');
+      if (camera) camera.setAttribute('position', '0 1.6 2.5');
     });
   },
 
@@ -256,28 +309,54 @@ function checkPointOverlap() {
   const boxObj = boxEl.object3D;
   let overlapDetected = false;
 
-  // Check bounds in LOCAL coordinate space of the bounding box.
-  // Since the parent container (boxEl) is scaled to width, height, and depth,
-  // the visual box inside it represents exactly a 1x1x1 unit cube centered at Y=0.5.
-  // Therefore, the normalized local bounds are always:
-  // - X: [-0.5, 0.5]
-  // - Y: [0.05, 1.0] (with a 5cm bottom floor padding)
-  // - Z: [-0.5, 0.5]
-  // This solves the bug where collision was scaled by dimensions squared!
-  for (let i = 0; i < hitPointsHistory.length; i++) {
-    const pt = hitPointsHistory[i];
-    
-    // Convert world hit point into local space of the placed bounding box
-    const localPt = new THREE.Vector3(pt.x, pt.y, pt.z);
-    boxObj.worldToLocal(localPt);
+  const scene = document.querySelector('a-scene');
+  if (scene && scene.is('ar-mode')) {
+    // Mobile AR Mode: Point-Cloud Collision Engine
+    // Check bounds in LOCAL coordinate space of the bounding box.
+    // Since the parent container (boxEl) is scaled to width, height, and depth,
+    // the visual box inside it represents exactly a 1x1x1 unit cube centered at Y=0.5.
+    // Therefore, the normalized local bounds are always:
+    // - X: [-0.5, 0.5]
+    // - Y: [0.05, 1.0] (with a 5cm bottom floor padding)
+    // - Z: [-0.5, 0.5]
+    // This solves the bug where collision was scaled by dimensions squared!
+    for (let i = 0; i < hitPointsHistory.length; i++) {
+      const pt = hitPointsHistory[i];
+      
+      // Convert world hit point into local space of the placed bounding box
+      const localPt = new THREE.Vector3(pt.x, pt.y, pt.z);
+      boxObj.worldToLocal(localPt);
 
-    const insideX = Math.abs(localPt.x) <= 0.5;
-    const insideY = localPt.y > 0.05 && localPt.y <= 1.0;
-    const insideZ = Math.abs(localPt.z) <= 0.5;
+      const insideX = Math.abs(localPt.x) <= 0.5;
+      const insideY = localPt.y > 0.05 && localPt.y <= 1.0;
+      const insideZ = Math.abs(localPt.z) <= 0.5;
 
-    if (insideX && insideY && insideZ) {
+      if (insideX && insideY && insideZ) {
+        overlapDetected = true;
+        break;
+      }
+    }
+  } else {
+    // Desktop Simulator Mode: check if box overlaps the wall at z = -1.5
+    const pos = boxEl.getAttribute('position');
+    const w = currentItem.w;
+    const h = currentItem.h;
+    const d = currentItem.d;
+
+    const wallZ = -1.5;
+    const boxMinZ = pos.z - d / 2;
+    const boxMaxZ = pos.z + d / 2;
+
+    const boxMinX = pos.x - w / 2;
+    const boxMaxX = pos.x + w / 2;
+
+    // Wall extends horizontally from x = -2 to x = 2, and vertically from y = 0 to y = 2
+    const zOverlap = boxMinZ <= wallZ && boxMaxZ >= wallZ;
+    const xOverlap = boxMinX <= 2 && boxMaxX >= -2;
+    const yOverlap = pos.y <= 2 && (pos.y + h) >= 0;
+
+    if (zOverlap && xOverlap && yOverlap) {
       overlapDetected = true;
-      break;
     }
   }
 

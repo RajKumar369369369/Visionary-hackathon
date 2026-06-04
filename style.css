@@ -25,6 +25,12 @@ body, html {
   color: var(--text-main);
 }
 
+/* Ensure WebXR camera feed is visible behind the canvas when entering fullscreen AR */
+html.a-fullscreen, html.a-fullscreen body {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
 /* Screen UI Overlay Containers */
 #ui-container {
   position: absolute;
