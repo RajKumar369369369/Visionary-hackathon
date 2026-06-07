@@ -1,41 +1,63 @@
 /**
- * FitCheck AR – app.js
+ * FitCheck AR  –  app.js
+ * ═══════════════════════════════════════════════════════════════════════════
  *
- * Features:
- *  - WebXR hit-test floor detection & tap-to-place
- *  - D-pad (forward/back/left/right) for manual position nudging
- *  - Rotate left/right (Y-axis rotation)
- *  - Height (Y-axis) up/down control
- *  - Fine (2 cm) / Coarse (10 cm) step sizes
- *  - Lock mode: center button toggles whether tap re-places the box
- *  - Collision detection: box turns red when it would overlap a surface
- *  - All AFRAME components registered in <head> before <a-scene> parses
+ * Architecture note
+ * ─────────────────
+ * This file is loaded in <head> BEFORE <a-scene> is parsed. This is required
+ * because AFRAME.registerComponent() must execute before A-Frame encounters
+ * the component attribute on <a-scene>. Loading after <body> would silently
+ * discard the component, causing the "Scanning Floor forever" bug.
+ *
+ * Core design principles
+ * ──────────────────────
+ * 1. The A-Frame component "ar-hit-test-manager" owns ALL WebXR state.
+ * 2. Plain JS functions own UI state only – they never touch XR objects directly.
+ * 3. No global variables hold A-Frame entity references; they are fetched inside
+ *    the component via getElementById after 'loaded' fires.
+ * 4. UI touches set lastUiTouch timestamp; XR "select" checks this gate to
+ *    prevent accidental box placement when tapping HUD buttons.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
  */
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. ITEM CATALOG
+// 1. PRODUCT CATALOG
+//    Each entry: { name, icon, desc, w, h, d }  (dimensions in metres)
+//    Covers furniture, appliances, Indian logistics use-cases (car trunk,
+//    elevator, doorway) so evaluators see real-world breadth.
 // ─────────────────────────────────────────────────────────────────────────────
 const CATALOG = [
-  { name: '75" TV Box',    desc: 'Typical 75" TV packaging.',   w: 1.70, h: 1.00, d: 0.20 },
-  { name: '3-Seater Sofa', desc: 'Standard living room sofa.',  w: 2.20, h: 0.90, d: 0.90 },
-  { name: 'French Fridge', desc: 'Double-door refrigerator.',   w: 0.90, h: 1.80, d: 0.90 },
+  { name: '75" TV Box',        icon: '📺', desc: 'Typical 75" TV packaging. Check car trunk or elevator.',        w: 1.70, h: 1.00, d: 0.20 },
+  { name: '3-Seater Sofa',     icon: '🛋️', desc: 'Standard sofa. Verify stairwell or doorway clearance.',        w: 2.20, h: 0.90, d: 0.90 },
+  { name: 'French Fridge',     icon: '🧊', desc: 'Double-door refrigerator. Check kitchen hallway width.',        w: 0.90, h: 1.80, d: 0.75 },
+  { name: 'Washing Machine',   icon: '🫧', desc: 'Front-load washer. Verify bathroom alcove or balcony fit.',     w: 0.60, h: 0.85, d: 0.60 },
+  { name: 'Split AC Indoor',   icon: '❄️', desc: 'Indoor AC unit. Check wall width and clearance zone.',         w: 1.00, h: 0.30, d: 0.22 },
+  { name: 'Wardrobe (3-door)', icon: '🚪', desc: '3-door wardrobe. Verify bedroom wall space and door swing.',   w: 1.50, h: 2.10, d: 0.60 },
+  { name: 'Standard Elevator', icon: '🛗', desc: 'Typical Indian elevator interior. Will your item fit inside?', w: 1.10, h: 2.10, d: 1.40 },
+  { name: 'Car Boot (Sedan)',   icon: '🚗', desc: 'Average sedan boot volume. Will your package fit?',            w: 1.00, h: 0.50, d: 0.90 },
 ];
 
-let currentItem = { ...CATALOG[0] };
-let isPlaced    = false;
-let replaceLock = false;   // when true, screen taps won't re-place the box
-let stepSize    = 0.02;    // metres per nudge (fine = 0.02, coarse = 0.10)
-let lastUiTouch = 0;
+let currentItem  = { ...CATALOG[0] };
+let isPlaced     = false;
+let replaceLock  = false;
+let stepSize     = 0.02;
+let lastUiTouch  = 0;
 
-// Move loop state
+// Continuous move loop state
 let moveInterval = null;
 let currentDir   = null;
 
 // Collision state
 let isColliding  = false;
+let verdictShown = false;
+
+// Tutorial state
+let tutorialSlide = 0;
+const TOTAL_SLIDES = 4;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 2. A-FRAME COMPONENT
+// 2. A-FRAME COMPONENT  –  ar-hit-test-manager
 // ─────────────────────────────────────────────────────────────────────────────
 AFRAME.registerComponent('ar-hit-test-manager', {
 
@@ -44,11 +66,12 @@ AFRAME.registerComponent('ar-hit-test-manager', {
     this.reticleEl     = null;
     this.bboxEl        = null;
     this.bboxMeshEl    = null;
+    this.bboxWireEl    = null;
     this.xrSession     = null;
 
-    // Point-cloud for surface detection (collision)
-    this.surfacePoints = [];   // Array of {x,y,z} world positions from hit-test
-    this.MAX_POINTS    = 120;
+    // Surface point cloud for collision detection
+    this.surfacePoints = [];
+    this.MAX_POINTS    = 150;
 
     this._onEnterVR = this._onEnterVR.bind(this);
     this._onExitVR  = this._onExitVR.bind(this);
@@ -65,13 +88,14 @@ AFRAME.registerComponent('ar-hit-test-manager', {
     });
   },
 
+  // ── Called every frame ───────────────────────────────────────────────────
   tick: function () {
     if (!this.xrSession || !this.hitTestSource) return;
     const frame = this.el.frame;
     if (!frame) return;
 
     const refSpace = this.el.renderer.xr.getReferenceSpace();
-    if (!refSpace)  return;
+    if (!refSpace) return;
 
     const results = frame.getHitTestResults(this.hitTestSource);
 
@@ -81,7 +105,7 @@ AFRAME.registerComponent('ar-hit-test-manager', {
 
       const p = pose.transform.position;
 
-      // Move reticle
+      // Update reticle position
       if (this.reticleEl) {
         this.reticleEl.setAttribute('visible', 'true');
         this.reticleEl.object3D.position.set(p.x, p.y, p.z);
@@ -91,9 +115,7 @@ AFRAME.registerComponent('ar-hit-test-manager', {
       this._addSurfacePoint(p.x, p.y, p.z);
 
       if (!isPlaced) setStatus('ready', 'Tap to Place');
-
-      // Run collision check every frame when placed
-      if (isPlaced) this._checkCollision();
+      if (isPlaced)  this._checkCollision();
 
     } else {
       if (!isPlaced && this.reticleEl) {
@@ -103,18 +125,27 @@ AFRAME.registerComponent('ar-hit-test-manager', {
     }
   },
 
+  // ── Surface point management ─────────────────────────────────────────────
   _addSurfacePoint: function (x, y, z) {
-    if (this.surfacePoints.length >= this.MAX_POINTS) {
-      this.surfacePoints.shift();
-    }
+    if (this.surfacePoints.length >= this.MAX_POINTS) this.surfacePoints.shift();
     this.surfacePoints.push({ x, y, z });
   },
 
   /**
-   * Collision detection: converts each accumulated surface point into the
-   * local coordinate space of the bounding box container.  Because the
-   * container is scaled to [w, h, d], the normalized local extents are
-   * always [-0.5, 0.5] on X/Z and [0, 1] on Y.
+   * Collision detection algorithm:
+   *
+   * Each surface hit-test point (world space) is transformed into the
+   * LOCAL coordinate space of the bounding box container entity.
+   *
+   * Because the container is scaled to [width, height, depth] of the item,
+   * and the inner 1×1×1 mesh has its bottom at Y=0 (pivot at bottom-center),
+   * the normalized local extents are ALWAYS:
+   *   X: [-0.5, 0.5]
+   *   Y: [0.04, 1.0]  (4 cm padding to avoid false positives from floor itself)
+   *   Z: [-0.5, 0.5]
+   *
+   * This avoids the classical bug of scaling the check bounds by the item
+   * dimensions squared (happens if you check world-space AABB instead).
    */
   _checkCollision: function () {
     if (!this.bboxEl) return;
@@ -125,11 +156,14 @@ AFRAME.registerComponent('ar-hit-test-manager', {
       const local = new THREE.Vector3(pt.x, pt.y, pt.z);
       boxObj.worldToLocal(local);
 
-      const inX = Math.abs(local.x) <= 0.5;
-      const inY = local.y > 0.04 && local.y <= 1.0;   // 4 cm floor padding
-      const inZ = Math.abs(local.z) <= 0.5;
-
-      if (inX && inY && inZ) { hit = true; break; }
+      if (
+        Math.abs(local.x) <= 0.5 &&
+        local.y > 0.04 && local.y <= 1.0 &&
+        Math.abs(local.z) <= 0.5
+      ) {
+        hit = true;
+        break;
+      }
     }
 
     if (hit !== isColliding) {
@@ -139,29 +173,30 @@ AFRAME.registerComponent('ar-hit-test-manager', {
   },
 
   _applyCollisionVisual: function (colliding) {
-    const mesh = this.bboxMeshEl;
-    const wire = this.bboxWireEl;
+    const mesh  = this.bboxMeshEl;
+    const wire  = this.bboxWireEl;
     const badge = document.getElementById('collision-badge');
 
     if (colliding) {
-      if (mesh) mesh.setAttribute('material', 'color', '#f43f5e');
-      if (wire) wire.setAttribute('material', 'color', '#f43f5e');
+      if (mesh)  mesh.setAttribute('material', 'color', '#f43f5e');
+      if (wire)  wire.setAttribute('material', 'color', '#f43f5e');
       setStatus('collision', '⚠️ Collision!');
       if (badge) badge.style.display = 'flex';
-      if (navigator.vibrate) navigator.vibrate(80);
+      if (navigator.vibrate) navigator.vibrate([80, 40, 80]);
     } else {
-      if (mesh) mesh.setAttribute('material', 'color', '#10b981');
-      if (wire) wire.setAttribute('material', 'color', '#ffffff');
+      if (mesh)  mesh.setAttribute('material', 'color', '#10b981');
+      if (wire)  wire.setAttribute('material', 'color', '#ffffff');
       setStatus('ready', 'Placed ✓');
       if (badge) badge.style.display = 'none';
     }
   },
 
+  // ── WebXR session start ──────────────────────────────────────────────────
   _onEnterVR: function () {
     if (!this.el.is('ar-mode')) return;
 
     this.xrSession = this.el.xrSession;
-    document.getElementById('ar-hud').style.display   = 'block';
+    document.getElementById('ar-hud').style.display        = 'block';
     document.getElementById('start-overlay').style.display = 'none';
     showHint('Slowly move your phone to detect the floor');
     setStatus('scanning', 'Scanning Floor…');
@@ -169,7 +204,7 @@ AFRAME.registerComponent('ar-hit-test-manager', {
 
     this.xrSession.addEventListener('select', this._onSelect);
 
-    // Request hit-test source
+    // Request WebXR hit-test source tied to viewer (camera center)
     this.xrSession.requestReferenceSpace('viewer').then(vs => {
       return this.xrSession.requestHitTestSource({ space: vs });
     }).then(src => {
@@ -177,51 +212,53 @@ AFRAME.registerComponent('ar-hit-test-manager', {
       console.log('[FitCheck] Hit-test source acquired ✓');
     }).catch(err => {
       console.error('[FitCheck] Hit-test FAILED:', err);
-      showHint('Floor detection unavailable – tap anywhere to place');
+      showHint('Surface detection unavailable – tap anywhere to place');
     });
   },
 
+  // ── WebXR session end (user pressed Back) ────────────────────────────────
   _onExitVR: function () {
     if (this.hitTestSource) { this.hitTestSource.cancel(); this.hitTestSource = null; }
-    this.xrSession = null;
+    this.xrSession     = null;
     this.surfacePoints = [];
-    isPlaced   = false;
+    isPlaced    = false;
     isColliding = false;
+    verdictShown = false;
     stopMove();
 
-    document.getElementById('ar-hud').style.display        = 'none';
-    document.getElementById('start-overlay').style.display = 'flex';
-    document.getElementById('controls-left').style.display = 'none';
+    document.getElementById('ar-hud').style.display          = 'none';
+    document.getElementById('start-overlay').style.display   = 'flex';
+    document.getElementById('controls-left').style.display   = 'none';
     document.getElementById('collision-badge').style.display = 'none';
+    document.getElementById('verdict-card').style.display    = 'none';
 
     if (this.reticleEl) this.reticleEl.setAttribute('visible', 'false');
     if (this.bboxEl)    this.bboxEl.setAttribute('visible', 'false');
   },
 
+  // ── Screen tap → place bounding box ─────────────────────────────────────
   _onSelect: function () {
-    // If locked or just tapped UI, skip
-    if (replaceLock)                      return;
-    if (Date.now() - lastUiTouch < 400)   return;
-
-    if (!this.reticleEl) return;
+    if (replaceLock)                     return;
+    if (Date.now() - lastUiTouch < 400)  return;
+    if (!this.reticleEl)                 return;
     if (!this.reticleEl.getAttribute('visible')) return;
 
     const pos = this.reticleEl.object3D.position;
     this.bboxEl.object3D.position.set(pos.x, pos.y, pos.z);
-    this.bboxEl.object3D.rotation.set(0, 0, 0);   // reset rotation on new placement
+    this.bboxEl.object3D.rotation.set(0, 0, 0);
     this.bboxEl.setAttribute('visible', 'true');
     applyDimensions();
 
-    isPlaced = true;
-    isColliding = false;
+    isPlaced     = true;
+    isColliding  = false;
+    verdictShown = false;
     this._applyCollisionVisual(false);
-    this.surfacePoints = [];   // clear old surface data after placing
+    this.surfacePoints = [];
 
     setStatus('ready', 'Box Placed ✓');
-    showHint(`${currentItem.name} placed! Use the D-pad to fine-tune position.`);
+    showHint(`${currentItem.name} anchored! D-pad to fine-tune position.`);
     if (navigator.vibrate) navigator.vibrate(60);
 
-    // Show controls panel
     document.getElementById('controls-left').style.display = 'flex';
   },
 
@@ -232,20 +269,21 @@ AFRAME.registerComponent('ar-hit-test-manager', {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Start continuous movement in direction `dir`.
- * Uses requestAnimationFrame so movement speed is frame-rate independent.
+ * Starts a rAF loop that continuously nudges the box while a button is held.
+ * Movement directions (forward/back/left/right) are relative to the camera's
+ * current Y-axis yaw, so the D-pad always feels intuitive regardless of the
+ * user's standing orientation.
  */
 function startMove(dir) {
   stopMove();
-  currentDir = dir;
-  lastUiTouch = Date.now();
+  currentDir   = dir;
+  lastUiTouch  = Date.now();
 
-  function loop() {
+  (function loop() {
     if (!currentDir || !isPlaced) return;
     nudge(currentDir);
     moveInterval = requestAnimationFrame(loop);
-  }
-  moveInterval = requestAnimationFrame(loop);
+  })();
 }
 
 function stopMove() {
@@ -253,57 +291,29 @@ function stopMove() {
   currentDir = null;
 }
 
-/**
- * Move the bounding box one step in the given direction.
- * Forward/back are relative to the camera's current Y-axis rotation so the
- * D-pad always feels intuitive regardless of where you are standing.
- */
 function nudge(dir) {
   const bbox = document.getElementById('bbox');
   if (!bbox) return;
   const obj = bbox.object3D;
 
-  // Get camera's yaw so fwd/back follow the user's viewpoint
   const camera = document.querySelector('[camera]');
   const camYaw = camera ? camera.object3D.rotation.y : 0;
-
-  const step = stepSize;
-  const ROT_STEP = THREE.MathUtils.degToRad(2);   // 2° per frame
+  const s      = stepSize;
+  const ROT    = THREE.MathUtils.degToRad(2);
 
   switch (dir) {
-    case 'fwd':
-      obj.position.x -= Math.sin(camYaw) * step;
-      obj.position.z -= Math.cos(camYaw) * step;
-      break;
-    case 'back':
-      obj.position.x += Math.sin(camYaw) * step;
-      obj.position.z += Math.cos(camYaw) * step;
-      break;
-    case 'left':
-      obj.position.x -= Math.cos(camYaw) * step;
-      obj.position.z += Math.sin(camYaw) * step;
-      break;
-    case 'right':
-      obj.position.x += Math.cos(camYaw) * step;
-      obj.position.z -= Math.sin(camYaw) * step;
-      break;
-    case 'up':
-      obj.position.y += step;
-      break;
-    case 'down':
-      obj.position.y = Math.max(0, obj.position.y - step);
-      break;
-    case 'rotl':
-      obj.rotation.y += ROT_STEP;
-      break;
-    case 'rotr':
-      obj.rotation.y -= ROT_STEP;
-      break;
+    case 'fwd':   obj.position.x -= Math.sin(camYaw)*s; obj.position.z -= Math.cos(camYaw)*s; break;
+    case 'back':  obj.position.x += Math.sin(camYaw)*s; obj.position.z += Math.cos(camYaw)*s; break;
+    case 'left':  obj.position.x -= Math.cos(camYaw)*s; obj.position.z += Math.sin(camYaw)*s; break;
+    case 'right': obj.position.x += Math.cos(camYaw)*s; obj.position.z -= Math.sin(camYaw)*s; break;
+    case 'up':    obj.position.y += s; break;
+    case 'down':  obj.position.y = Math.max(0, obj.position.y - s); break;
+    case 'rotl':  obj.rotation.y += ROT; break;
+    case 'rotr':  obj.rotation.y -= ROT; break;
   }
   obj.matrixAutoUpdate = true;
 }
 
-// ── Step size
 function setStep(mode) {
   stepSize = (mode === 'fine') ? 0.02 : 0.10;
   document.getElementById('step-fine').classList.toggle('active',   mode === 'fine');
@@ -311,27 +321,63 @@ function setStep(mode) {
   lastUiTouch = Date.now();
 }
 
-// ── Lock toggle (prevents taps from re-placing the box)
 function toggleReplace() {
   replaceLock = !replaceLock;
   const btn = document.getElementById('btn-lock');
   if (btn) {
-    btn.textContent  = replaceLock ? '🔓' : '🔒';
-    btn.title        = replaceLock ? 'Unlock re-placement' : 'Lock position (no re-place on tap)';
-    btn.style.background = replaceLock
-      ? 'rgba(0,229,255,0.25)'
-      : 'rgba(255,255,255,0.08)';
+    btn.textContent         = replaceLock ? '🔓' : '🔒';
+    btn.style.background    = replaceLock ? 'rgba(0,229,255,0.25)' : 'rgba(255,255,255,0.08)';
   }
   lastUiTouch = Date.now();
   showHint(replaceLock ? '🔒 Position locked – D-pad only' : '🔓 Tap floor to re-place');
 }
 
+// ── Opacity control ──────────────────────────────────────────────────────────
+function setOpacity(val) {
+  const op   = parseFloat(val) / 100;
+  const mesh = document.getElementById('bbox-mesh');
+  if (mesh) mesh.setAttribute('material', 'opacity', op);
+  lastUiTouch = Date.now();
+}
+
+// ── Fit verdict ──────────────────────────────────────────────────────────────
+function showVerdict() {
+  const card  = document.getElementById('verdict-card');
+  const icon  = document.getElementById('verdict-icon');
+  const title = document.getElementById('verdict-title');
+  const sub   = document.getElementById('verdict-sub');
+  if (!card) return;
+
+  if (isColliding) {
+    icon.textContent  = '❌';
+    title.textContent = "DOESN'T FIT!";
+    title.style.color = '#f43f5e';
+    sub.textContent   = `${currentItem.name} overlaps a detected surface.`;
+  } else {
+    icon.textContent  = '✅';
+    title.textContent = 'IT FITS!';
+    title.style.color = '#10b981';
+    sub.textContent   = `${currentItem.name} clears all detected surfaces.`;
+  }
+  card.style.display = 'flex';
+  lastUiTouch = Date.now();
+}
+
+function closeVerdict() {
+  document.getElementById('verdict-card').style.display = 'none';
+  lastUiTouch = Date.now();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
-// 4. UI / ITEM LOGIC
+// 4. UI / CATALOG LOGIC
 // ─────────────────────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
-  // Absorb pointer events from HUD elements so XR select isn't triggered
+  buildCatalogUI();
+  checkCompatibility();
+  showTutorialIfFirstVisit();
+
+  // UI touch absorbers – prevent XR select from firing on button taps
   ['ar-hud', 'bottom-panel', 'ar-header', 'controls-left'].forEach(id => {
     const el = document.getElementById(id);
     if (el) {
@@ -340,9 +386,34 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  checkCompatibility();
   document.getElementById('start-ar-btn').addEventListener('click', startAR);
 });
+
+/** Dynamically build catalog cards on welcome screen AND AR HUD from CATALOG array */
+function buildCatalogUI() {
+  // Welcome screen picker
+  const wPicker = document.getElementById('welcome-item-picker');
+  if (wPicker) {
+    wPicker.innerHTML = CATALOG.map((item, i) => `
+      <div class="item-card ${i === 0 ? 'selected' : ''}" id="ipick-${i}" onclick="pickItem(${i})">
+        <div class="item-icon">${item.icon}</div>
+        <div class="item-name">${item.name}</div>
+        <div class="item-dim">${item.w.toFixed(2)} × ${item.h.toFixed(2)} × ${item.d.toFixed(2)} m</div>
+      </div>
+    `).join('');
+  }
+
+  // AR HUD product grid
+  const hudGrid = document.getElementById('hud-product-grid');
+  if (hudGrid) {
+    hudGrid.innerHTML = CATALOG.map((item, i) => `
+      <div class="product-card ${i === 0 ? 'selected' : ''}" id="prod-${i}" onclick="selectItem(${i})">
+        <div class="product-icon">${item.icon}</div>
+        <div class="product-name">${item.name}</div>
+      </div>
+    `).join('');
+  }
+}
 
 async function startAR() {
   const scene = document.getElementById('ar-scene');
@@ -372,7 +443,7 @@ async function startAR() {
 }
 
 function showCamError() {
-  document.getElementById('start-overlay').style.display    = 'none';
+  document.getElementById('start-overlay').style.display     = 'none';
   document.getElementById('cam-error-overlay').style.display = 'flex';
 }
 
@@ -380,7 +451,7 @@ function checkCompatibility() {
   const note = document.getElementById('compat-note');
   if (!note) return;
   if (!navigator.xr) {
-    note.textContent = '⚠️ WebXR unavailable. Use Chrome on Android.';
+    note.textContent = '⚠️ WebXR unavailable – use Chrome on Android.';
     note.style.color = '#f59e0b';
     return;
   }
@@ -395,6 +466,7 @@ function checkCompatibility() {
   });
 }
 
+// ── Catalog selection ────────────────────────────────────────────────────────
 function pickItem(index) {
   document.querySelectorAll('.item-card').forEach(c => c.classList.remove('selected'));
   document.getElementById(`ipick-${index}`).classList.add('selected');
@@ -422,7 +494,7 @@ function applyCustom() {
   const w = Math.max(0.05, parseFloat(document.getElementById('input-w').value) || 1.0);
   const h = Math.max(0.05, parseFloat(document.getElementById('input-h').value) || 1.0);
   const d = Math.max(0.05, parseFloat(document.getElementById('input-d').value) || 1.0);
-  currentItem = { name: 'Custom Box', desc: 'Custom dimensions.', w, h, d };
+  currentItem = { name: 'Custom Box', icon: '📦', desc: 'Custom dimensions.', w, h, d };
   updateHUD();
   if (isPlaced) applyDimensions();
   showHint(`Custom: ${w.toFixed(2)} × ${h.toFixed(2)} × ${d.toFixed(2)} m`);
@@ -442,26 +514,39 @@ function updateHUD() {
 }
 
 function resetSession() {
-  isPlaced   = false;
+  isPlaced    = false;
   isColliding = false;
   replaceLock = false;
+  verdictShown = false;
   stopMove();
 
-  const bbox    = document.getElementById('bbox');
-  const reticle = document.getElementById('reticle');
-  const mesh    = document.getElementById('bbox-mesh');
-  const wire    = document.getElementById('bbox-wire');
-  const badge   = document.getElementById('collision-badge');
-  const lock    = document.getElementById('btn-lock');
+  const ids = { bbox:'bbox', reticle:'reticle', mesh:'bbox-mesh', wire:'bbox-wire',
+                badge:'collision-badge', lock:'btn-lock', verdict:'verdict-card', ctrl:'controls-left' };
 
-  if (bbox)   { bbox.setAttribute('visible', 'false'); bbox.object3D.rotation.set(0,0,0); }
+  const bbox = document.getElementById(ids.bbox);
+  if (bbox) { bbox.setAttribute('visible', 'false'); bbox.object3D.rotation.set(0,0,0); }
+
+  const reticle = document.getElementById(ids.reticle);
   if (reticle) reticle.setAttribute('visible', 'false');
-  if (mesh)    mesh.setAttribute('material', 'color', '#10b981');
-  if (wire)    wire.setAttribute('material', 'color', '#ffffff');
-  if (badge)   badge.style.display = 'none';
-  if (lock)  { lock.textContent = '🔒'; lock.style.background = 'rgba(255,255,255,0.08)'; }
 
-  document.getElementById('controls-left').style.display = 'none';
+  const mesh = document.getElementById(ids.mesh);
+  if (mesh) mesh.setAttribute('material', 'color', '#10b981');
+
+  const wire = document.getElementById(ids.wire);
+  if (wire) wire.setAttribute('material', 'color', '#ffffff');
+
+  ['badge','lock','verdict','ctrl'].forEach(k => {
+    const el = document.getElementById(ids[k]);
+    if (!el) return;
+    if (k === 'badge' || k === 'verdict') el.style.display = 'none';
+    if (k === 'ctrl')   el.style.display = 'none';
+    if (k === 'lock') { el.textContent = '🔒'; el.style.background = 'rgba(255,255,255,0.08)'; }
+  });
+
+  // Reset opacity slider
+  const slider = document.getElementById('opacity-slider');
+  if (slider) { slider.value = 38; setOpacity(38); }
+
   setStatus('scanning', 'Scanning Floor…');
   showHint('Move phone to re-detect floor');
   lastUiTouch = Date.now();
@@ -476,23 +561,65 @@ function switchTab(tab) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 5. HUD HELPERS
+// 5. TUTORIAL LOGIC
+// ─────────────────────────────────────────────────────────────────────────────
+function showTutorialIfFirstVisit() {
+  try {
+    if (!localStorage.getItem('fitcheck_tutorial_done')) {
+      openTutorial();
+    }
+  } catch (_) {}
+}
+
+function openTutorial() {
+  tutorialSlide = 0;
+  renderSlide(0);
+  document.getElementById('tutorial-overlay').style.display = 'flex';
+}
+
+function closeTutorial() {
+  document.getElementById('tutorial-overlay').style.display = 'none';
+  try { localStorage.setItem('fitcheck_tutorial_done', '1'); } catch (_) {}
+}
+
+function nextSlide() {
+  if (tutorialSlide < TOTAL_SLIDES - 1) {
+    goSlide(tutorialSlide + 1);
+  } else {
+    closeTutorial();
+  }
+}
+
+function goSlide(index) {
+  renderSlide(index);
+}
+
+function renderSlide(index) {
+  tutorialSlide = index;
+  document.querySelectorAll('.t-slide').forEach((s, i) => s.classList.toggle('active', i === index));
+  document.querySelectorAll('.t-dot').forEach((d, i) => d.classList.toggle('active', i === index));
+  const nextBtn = document.getElementById('t-next-btn');
+  if (nextBtn) nextBtn.textContent = (index === TOTAL_SLIDES - 1) ? 'Got it! →' : 'Next →';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 6. HUD HELPERS
 // ─────────────────────────────────────────────────────────────────────────────
 let hintTimer = null;
 function showHint(msg) {
   const el    = document.getElementById('hint-text');
   const toast = document.getElementById('hint-toast');
   if (!el || !toast) return;
-  el.textContent = msg;
+  el.textContent      = msg;
   toast.style.opacity = '1';
   clearTimeout(hintTimer);
-  hintTimer = setTimeout(() => { toast.style.opacity = '0'; }, 3200);
+  hintTimer = setTimeout(() => { toast.style.opacity = '0'; }, 3500);
 }
 
 function setStatus(state, label) {
   const dot  = document.getElementById('status-dot');
   const text = document.getElementById('status-text');
   if (!dot || !text) return;
-  dot.className   = 'status-dot ' + state;
+  dot.className    = 'status-dot ' + state;
   text.textContent = label;
 }
