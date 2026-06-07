@@ -3,70 +3,148 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>FitCheck Space Optimizer</title>
-  <!-- Google Fonts for Modern Typography -->
+  <meta name="description" content="FitCheck Space Optimizer – AR tool to preview 1:1 scale bounding boxes of furniture in your real environment">
+  <title>FitCheck – AR Space Optimizer</title>
+
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-  
-  <!-- A-Frame Library -->
-  <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 
-  <!-- External Clean Styling -->
+  <!-- A-Frame 1.5.0 -->
+  <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+
+  <!-- App logic MUST be in <head> so components register before a-scene parses -->
+  <script src="app.js"></script>
+
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-  <!-- Welcome / WebXR Launch Overlay -->
+  <!-- ============================================================
+       WELCOME SCREEN
+  ============================================================ -->
   <div id="start-overlay">
     <div class="welcome-card">
       <div class="welcome-logo">
-        <svg viewBox="0 0 24 24">
-          <path d="M12 2.69l5.66 3.27-5.66 3.27-5.66-3.27L12 2.69M2.81 7.22l8.19 4.73v9.36l-8.19-4.73V7.22M21.19 7.22v9.36l-8.19 4.73v-9.36l8.19-4.73Z"/>
-        </svg>
+        <svg viewBox="0 0 24 24" fill="white"><path d="M12 2.69l5.66 3.27-5.66 3.27-5.66-3.27L12 2.69M2.81 7.22l8.19 4.73v9.36l-8.19-4.73V7.22M21.19 7.22v9.36l-8.19 4.73v-9.36l8.19-4.73Z"/></svg>
       </div>
-      <h1 class="welcome-title">FitCheck Optimizer</h1>
-      <p class="welcome-desc">
-        Overlay 1:1 true-to-scale bounding volumes of large items inside your car, elevator, or doorways to verify clearances in WebAR instantly.
-      </p>
-      <button class="primary-btn interactive" id="start-ar-btn">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right:2px;">
-          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
-          <circle cx="12" cy="13" r="4"></circle>
-        </svg>
+      <h1 class="welcome-title">FitCheck AR</h1>
+      <p class="welcome-desc">Project true-to-scale 3D boxes in your real world.<br>Check if furniture fits before you move it.</p>
+
+      <p class="step-label">① Choose an item</p>
+      <div class="item-picker">
+        <div class="item-card selected" id="ipick-0" onclick="pickItem(0)">
+          <div class="item-icon">📺</div>
+          <div class="item-name">75" TV Box</div>
+          <div class="item-dim">1.7 × 1.0 × 0.2 m</div>
+        </div>
+        <div class="item-card" id="ipick-1" onclick="pickItem(1)">
+          <div class="item-icon">🛋️</div>
+          <div class="item-name">3-Seater Sofa</div>
+          <div class="item-dim">2.2 × 0.9 × 0.9 m</div>
+        </div>
+        <div class="item-card" id="ipick-2" onclick="pickItem(2)">
+          <div class="item-icon">🧊</div>
+          <div class="item-name">French Fridge</div>
+          <div class="item-dim">0.9 × 1.8 × 0.9 m</div>
+        </div>
+      </div>
+
+      <p class="step-label" style="margin-top:14px;">② Launch AR</p>
+      <button id="start-ar-btn" class="primary-btn">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
         Enter AR Experience
       </button>
+      <p class="compat-note" id="compat-note"></p>
     </div>
   </div>
 
-  <!-- HUD overlay (visible once in AR) -->
-  <div id="ui-container">
-    <header class="interactive">
-      <div class="brand">
-        <div class="brand-logo"></div>
-        <span class="brand-title">FitCheck</span>
+  <!-- ============================================================
+       CAMERA DENIED
+  ============================================================ -->
+  <div id="cam-error-overlay" style="display:none;">
+    <div class="welcome-card">
+      <div class="welcome-logo" style="background:linear-gradient(135deg,#f43f5e,#be123c);">
+        <svg viewBox="0 0 24 24" width="32" height="32" fill="white"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm1 15h-2v-2h2zm0-4h-2V7h2z"/></svg>
       </div>
-      <div class="status-badge" id="ar-status-badge">
-        <span class="status-dot scanning" id="ar-status-dot"></span>
-        <span id="ar-status-text">Scanning floor</span>
+      <h1 class="welcome-title" style="color:#f43f5e;">Camera Access Denied</h1>
+      <p class="welcome-desc">FitCheck needs camera access for AR. Allow camera permission in your browser settings and reload.</p>
+      <button class="primary-btn" style="background:linear-gradient(135deg,#f43f5e,#be123c);" onclick="location.reload()">🔄 Reload & Try Again</button>
+    </div>
+  </div>
+
+  <!-- ============================================================
+       AR HUD  (entire overlay, shown after entering AR)
+  ============================================================ -->
+  <div id="ar-hud" style="display:none;">
+
+    <!-- TOP BAR -->
+    <header id="ar-header">
+      <div class="brand">
+        <div class="brand-dot"></div>
+        <span class="brand-name">FitCheck</span>
+      </div>
+      <div class="status-pill" id="status-pill">
+        <span class="status-dot" id="status-dot"></span>
+        <span id="status-text">Scanning…</span>
+      </div>
+      <!-- Collision badge (hidden by default) -->
+      <div class="collision-badge" id="collision-badge" style="display:none;">
+        ⚠️ NO FIT
       </div>
     </header>
 
-    <!-- Mid-screen instructions toast -->
-    <div id="status-toast" class="interactive">
-      <span id="toast-text">Move device slowly to detect surfaces</span>
+    <!-- MID-SCREEN HINT TOAST -->
+    <div id="hint-toast">
+      <span id="hint-text">Slowly move your phone to detect the floor</span>
     </div>
 
-    <!-- Bottom Sheet UI Panel -->
-    <div id="bottom-sheet" class="interactive">
-      <!-- Tabs switching -->
-      <div class="tabs-header">
-        <button class="tab-btn active" id="tab-library" onclick="switchTab('library')">Product Catalog</button>
-        <button class="tab-btn" id="tab-custom" onclick="switchTab('custom')">Custom Fit</button>
+    <!-- ── LEFT SIDE: D-PAD + ROTATION (visible only when placed) -->
+    <div id="controls-left" style="display:none;">
+
+      <!-- Step size toggle -->
+      <div class="step-toggle">
+        <button class="step-btn active" id="step-fine"   onclick="setStep('fine')">Fine<br><span>2 cm</span></button>
+        <button class="step-btn"        id="step-coarse" onclick="setStep('coarse')">Coarse<br><span>10 cm</span></button>
       </div>
 
-      <!-- Catalog List Tab -->
-      <div class="tab-content active" id="content-library">
+      <!-- D-Pad: Forward/Back/Left/Right -->
+      <div class="dpad">
+        <div class="dpad-row">
+          <button class="dpad-btn center-only" id="btn-fwd" ontouchstart="startMove('fwd')" ontouchend="stopMove()" onmousedown="startMove('fwd')" onmouseup="stopMove()" onmouseleave="stopMove()">▲</button>
+        </div>
+        <div class="dpad-row">
+          <button class="dpad-btn" id="btn-left" ontouchstart="startMove('left')" ontouchend="stopMove()" onmousedown="startMove('left')" onmouseup="stopMove()" onmouseleave="stopMove()">◄</button>
+          <button class="dpad-btn dpad-center" id="btn-lock" onclick="toggleReplace()">🔒</button>
+          <button class="dpad-btn" id="btn-right" ontouchstart="startMove('right')" ontouchend="stopMove()" onmousedown="startMove('right')" onmouseup="stopMove()" onmouseleave="stopMove()">►</button>
+        </div>
+        <div class="dpad-row">
+          <button class="dpad-btn center-only" id="btn-back" ontouchstart="startMove('back')" ontouchend="stopMove()" onmousedown="startMove('back')" onmouseup="stopMove()" onmouseleave="stopMove()">▼</button>
+        </div>
+      </div>
+
+      <!-- Rotate + Height row -->
+      <div class="extra-controls">
+        <button class="xbtn" id="btn-rotl" ontouchstart="startMove('rotl')" ontouchend="stopMove()" onmousedown="startMove('rotl')" onmouseup="stopMove()" onmouseleave="stopMove()" title="Rotate Left">↺</button>
+        <div class="height-col">
+          <button class="xbtn sm" id="btn-up"   ontouchstart="startMove('up')"   ontouchend="stopMove()" onmousedown="startMove('up')"   onmouseup="stopMove()" onmouseleave="stopMove()">↑</button>
+          <span class="xbtn-label">Height</span>
+          <button class="xbtn sm" id="btn-down" ontouchstart="startMove('down')" ontouchend="stopMove()" onmousedown="startMove('down')" onmouseup="stopMove()" onmouseleave="stopMove()">↓</button>
+        </div>
+        <button class="xbtn" id="btn-rotr" ontouchstart="startMove('rotr')" ontouchend="stopMove()" onmousedown="startMove('rotr')" onmouseup="stopMove()" onmouseleave="stopMove()" title="Rotate Right">↻</button>
+      </div>
+    </div>
+
+    <!-- BOTTOM PANEL -->
+    <div id="bottom-panel">
+      <!-- Tabs -->
+      <div class="tabs-row">
+        <button class="tab-btn active" id="tab-catalog" onclick="switchTab('catalog')">Catalog</button>
+        <button class="tab-btn"        id="tab-custom"  onclick="switchTab('custom')">Custom Size</button>
+      </div>
+
+      <!-- Catalog tab -->
+      <div class="tab-pane active" id="pane-catalog">
         <div class="product-grid">
           <div class="product-card selected" id="prod-0" onclick="selectItem(0)">
             <div class="product-icon">📺</div>
@@ -74,138 +152,91 @@
           </div>
           <div class="product-card" id="prod-1" onclick="selectItem(1)">
             <div class="product-icon">🛋️</div>
-            <div class="product-name">3-Seater Sofa</div>
+            <div class="product-name">3-Seat Sofa</div>
           </div>
           <div class="product-card" id="prod-2" onclick="selectItem(2)">
             <div class="product-icon">🧊</div>
-            <div class="product-name">French Fridge</div>
+            <div class="product-name">Fridge</div>
           </div>
         </div>
       </div>
 
-      <!-- Custom Input Form Tab -->
-      <div class="tab-content" id="content-custom">
-        <div class="custom-form">
+      <!-- Custom tab -->
+      <div class="tab-pane" id="pane-custom">
+        <div class="custom-inputs">
           <div class="input-group">
-            <span class="input-label">Width (m)</span>
+            <label class="input-label">Width (m)</label>
             <input type="number" id="input-w" class="num-input" value="1.70" step="0.05" min="0.1">
           </div>
           <div class="input-group">
-            <span class="input-label">Height (m)</span>
+            <label class="input-label">Height (m)</label>
             <input type="number" id="input-h" class="num-input" value="1.00" step="0.05" min="0.1">
           </div>
           <div class="input-group">
-            <span class="input-label">Depth (m)</span>
+            <label class="input-label">Depth (m)</label>
             <input type="number" id="input-d" class="num-input" value="0.20" step="0.05" min="0.1">
           </div>
-          <button class="apply-custom-btn" onclick="applyCustomDims()">
-            ✓ Generate & Apply Box Size
-          </button>
         </div>
+        <button class="apply-btn" onclick="applyCustom()">✓ Apply Custom Size</button>
       </div>
 
-      <!-- Active Box HUD details -->
-      <div class="hud-details">
-        <div class="selected-metadata">
-          <div class="selected-title" id="hud-item-name">75-inch TV Box</div>
-          <div class="selected-dims" id="hud-item-dims">67" x 39" x 8"  |  1.70m x 1.00m x 0.20m</div>
+      <!-- Info row -->
+      <div class="info-row">
+        <div class="item-info">
+          <div class="info-name" id="hud-name">75" TV Box</div>
+          <div class="info-dims" id="hud-dims">1.70 × 1.00 × 0.20 m</div>
         </div>
-        <button class="reset-btn" onclick="resetARSession()">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <polyline points="3 6 5 6 21 6"></polyline>
-            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-          </svg>
-          Clear
-        </button>
+        <button class="reset-btn" onclick="resetSession()">↺ Reset</button>
       </div>
     </div>
-  </div>
 
-  <!-- A-Frame 3D Scene -->
-  <a-scene 
-    webxr="optionalFeatures: hit-test, local-floor; referenceSpaceType: local-floor" 
+  </div><!-- /#ar-hud -->
+
+  <!-- ============================================================
+       A-FRAME SCENE
+  ============================================================ -->
+  <a-scene
+    id="ar-scene"
+    webxr="requiredFeatures: hit-test; optionalFeatures: dom-overlay, local-floor; overlayElement: #ar-hud;"
+    renderer="colorManagement: true; alpha: true; antialias: true;"
     vr-mode-ui="enabled: false"
-    renderer="colorManagement: true; antialias: true;"
-    cursor="rayOrigin: mouse"
-    raycaster="objects: .clickable">
-    
+    ar-hit-test-manager
+    style="display:none;">
+
     <a-assets>
-      <a-mixin id="reticle-ring" geometry="primitive: ring; radiusInner: 0.12; radiusOuter: 0.15;" material="color: #06b6d4; shader: flat; transparent: true; opacity: 0.8;"></a-mixin>
-      <a-mixin id="reticle-dot" geometry="primitive: circle; radius: 0.02;" material="color: #06b6d4; shader: flat;"></a-mixin>
-      <!-- HTML Canvas to generate a dynamic sharp grid texture (offline-friendly) -->
-      <canvas id="grid-texture" width="128" height="128"></canvas>
+      <a-mixin id="m-ring"
+        geometry="primitive:ring; radiusInner:0.10; radiusOuter:0.135; segmentsTheta:32;"
+        material="color:#00e5ff; shader:flat; transparent:true; opacity:0.9; side:double;">
+      </a-mixin>
     </a-assets>
 
-    <!-- Camera rig (positioned back to view the desktop simulator) -->
-    <a-entity camera position="0 1.6 2.5" look-controls></a-entity>
+    <a-entity camera></a-entity>
+    <a-light type="ambient"     color="#ffffff" intensity="0.5"></a-light>
+    <a-light type="directional" color="#ffffff" intensity="0.8" position="1 3 2"></a-light>
 
-    <!-- Light Sources -->
-    <a-entity light="type: ambient; color: #BBB; intensity: 0.6"></a-entity>
-    <a-entity light="type: directional; color: #FFF; intensity: 0.8; castShadow: true" position="-0.5 2 1.5"></a-entity>
+    <!-- Placement reticle -->
+    <a-entity id="reticle" visible="false" rotation="-90 0 0">
+      <a-entity mixin="m-ring"></a-entity>
+      <a-circle radius="0.02" material="color:#00e5ff; shader:flat;"></a-circle>
+      <a-ring radius-inner="0.16" radius-outer="0.18" segments-theta="32"
+        material="color:#00e5ff; shader:flat; transparent:true; opacity:0.4;"
+        animation="property:scale; from:1 1 1; to:1.3 1.3 1.3; dur:900; dir:alternate; loop:true; easing:easeInOutSine;">
+      </a-ring>
+    </a-entity>
 
-    <!-- Desktop Simulation Environment (hidden in AR mode) -->
-    <a-entity id="desktop-simulation">
-      <!-- Floor plane with custom canvas grid texture -->
-      <a-plane 
-        id="sim-floor" 
-        class="clickable" 
-        rotation="-90 0 0" 
-        width="20" height="20" 
-        material="src: #grid-texture; repeat: 20 20; roughness: 1; metalness: 0.1;">
-      </a-plane>
-      
-      <!-- Simulated Wall at z = -1.5 -->
-      <a-box 
-        id="sim-wall" 
-        position="0 1 -1.5" 
-        width="4" height="2" depth="0.1" 
-        color="#1e293b" 
-        material="roughness: 0.8; metalness: 0.2;">
+    <!-- Bounding box -->
+    <a-entity id="bbox" visible="false">
+      <a-box id="bbox-mesh"
+        position="0 0.5 0" width="1" height="1" depth="1"
+        material="color:#10b981; transparent:true; opacity:0.38; side:double; metalness:0.05; roughness:0.4;">
       </a-box>
-      
-      <!-- Guidance texts -->
-      <a-text 
-        value="SIMULATED WALL (z = -1.5)" 
-        position="0 2.2 -1.49" 
-        align="center" 
-        color="#f43f5e" 
-        scale="0.6 0.6 0.6">
-      </a-text>
-      <a-text 
-        value="Click the floor grid to place the box. Move it close to this wall to test FitCheck!" 
-        position="0 1.2 -1.49" 
-        align="center" 
-        color="#94a3b8" 
-        scale="0.4 0.4 0.4">
-      </a-text>
-    </a-entity>
-
-    <!-- The AR Placement Reticle -->
-    <a-entity id="placement-reticle" visible="false">
-      <a-entity mixin="reticle-ring" rotation="-90 0 0"></a-entity>
-      <a-entity mixin="reticle-dot" rotation="-90 0 0"></a-entity>
-    </a-entity>
-
-    <!-- The 1:1 Scaled Bounding Box Container -->
-    <a-entity id="bounding-box" visible="false">
-      <a-box 
-        id="box-mesh" 
-        position="0 0.5 0" 
-        width="1" height="1" depth="1"
-        material="shader: standard; transparent: true; opacity: 0.45; color: #10b981; metalness: 0.1; roughness: 0.3; side: double;">
-        
-        <a-box 
-          id="box-wireframe"
-          position="0 0 0"
-          width="1.002" height="1.002" depth="1.002"
-          material="shader: flat; wireframe: true; wireframeLineWidth: 1.5; color: #ffffff; transparent: true; opacity: 0.6;">
-        </a-box>
+      <a-box id="bbox-wire"
+        position="0 0.5 0" width="1.005" height="1.005" depth="1.005"
+        material="color:#ffffff; shader:flat; wireframe:true; transparent:true; opacity:0.55;">
       </a-box>
     </a-entity>
 
   </a-scene>
 
-  <!-- External Modular JavaScript Logic -->
-  <script src="app.js"></script>
 </body>
 </html>
